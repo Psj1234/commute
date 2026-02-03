@@ -1,0 +1,81 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id         String    @id @default(uuid())
+  created_at DateTime  @default(now())
+  journeys   Journey[]
+  persona    UserPersona?
+}
+
+model Journey {
+  id            String    @id @default(uuid())
+  user_id       String
+  user          User      @relation(fields: [user_id], references: [id])
+  start_time    DateTime
+  end_time      DateTime?
+  planned_route String
+  final_route   String
+  completed     Boolean   @default(false)
+  events        Event[]
+}
+
+model Event {
+  id          String    @id @default(uuid())
+  journey_id  String
+  journey     Journey   @relation(fields: [journey_id], references: [id])
+  location_id String
+  event_type  EventType
+  wait_time   Int
+  timestamp   DateTime  @default(now())
+}
+
+enum EventType {
+  DELAY
+  IDLE
+  REROUTE
+}
+
+model LocationTimeStats {
+  id               String   @id @default(uuid())
+  location_id      String
+  time_window      String
+  avg_wait_time    Float
+  delay_probability Float
+  reroute_rate     Float
+  failure_score    Float
+}
+
+model RouteConfidence {
+  id          String   @id @default(uuid())
+  route_id    String
+  time_window String
+  rci_score   Float
+}
+
+model UserPersona {
+  user_id      String   @id
+  user         User     @relation(fields: [user_id], references: [id])
+  persona_type PersonaType
+  confidence   Float
+  last_updated DateTime
+}
+
+enum PersonaType {
+  RUSHER
+  SAFE_PLANNER
+  COMFORT_SEEKER
+  EXPLORER
+}
