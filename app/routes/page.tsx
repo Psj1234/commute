@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, CheckCircle, AlertTriangle, Zap } from "lucide-react";
-import { SAMPLE_ROUTES } from "@/app/lib/simulated-data";
+
 
 interface RouteData {
   id: string;
@@ -28,9 +28,10 @@ export default function RoutesComparison() {
     try {
       const response = await fetch("/api/routes/get");
       const data = await response.json();
-      setRoutes(data.routes);
+      setRoutes(data.routes || []);
     } catch (error) {
       console.error("Failed to fetch routes:", error);
+      setRoutes([]);
     }
     setLoading(false);
   }
@@ -79,6 +80,16 @@ export default function RoutesComparison() {
           {/* Routes Table */}
           {loading ? (
             <div className="text-center py-12 text-zinc-500">Loading routes...</div>
+          ) : routes.length === 0 ? (
+            <div className="text-center py-12">
+              <p className="text-zinc-500 mb-4">No routes found.</p>
+              <Link 
+                href="/dashboard" 
+                className="inline-block bg-zinc-900 text-white px-6 py-2 rounded-lg hover:bg-zinc-800 transition-colors"
+              >
+                Go to Dashboard to Generate Routes
+              </Link>
+            </div>
           ) : (
             <div className="space-y-6">
               {routes.map((route, idx) => (

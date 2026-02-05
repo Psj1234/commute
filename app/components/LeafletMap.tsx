@@ -5,7 +5,7 @@ import L, { LatLngExpression, Circle, GeoJSON } from "leaflet";
 import "leaflet/dist/leaflet.css";
 
 interface MapProps {
-  onLocationSelect?: (lat: number, lng: number, locationType: "start" | "end") => void;
+  onLocationSelect?: (lat: number | null, lng: number | null, locationType: "start" | "end" | "reset") => void;
   routes?: Array<{
     id: string;
     name: string;
@@ -14,6 +14,13 @@ interface MapProps {
     end_lat: number;
     end_lng: number;
     geometry: string;
+    steps?: Array<{ // NEW: Navigation steps
+      step_number: number;
+      instruction: string;
+      modifier?: string;
+      name?: string;
+      distance: number;
+    }>;
   }>;
   osintZones?: Array<{
     id: string;
@@ -26,6 +33,8 @@ interface MapProps {
   }>;
   showOSINT?: boolean;
   highlightedRouteId?: string;
+  highlightedStepIndex?: number; // NEW: Highlighted step
+  onStepClick?: (stepIndex: number) => void; // NEW: Step click callback
 }
 
 export default function LeafletMap({
@@ -34,26 +43,80 @@ export default function LeafletMap({
   osintZones = [],
   showOSINT = true,
   highlightedRouteId,
+  highlightedStepIndex, // NEW
+  onStepClick, // NEW
 }: MapProps) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const osintLayerRef = useRef<L.FeatureGroup>(new L.FeatureGroup());
   const routeLayersRef = useRef<{ [key: string]: L.Polyline }>({});
+  const stepLayersRef = useRef<{ [key: string]: L.Polyline[] }>({}); // NEW: Store step segments
+  const stepMarkersRef = useRef<{ [key: string]: L.CircleMarker[] }>({}); // NEW: Store step markers
   const startMarkerRef = useRef<L.Marker | null>(null);
   const endMarkerRef = useRef<L.Marker | null>(null);
   const polylineRef = useRef<L.Polyline | null>(null);
-  const [startLocation, setStartLocation] = useState<{ lat: number; lng: number } | null>(null);
-  const [endLocation, setEndLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [instruction, setInstruction] = useState<string>("Click to set start and end points");
+  const [localStart, setLocalStart] = useState<{ lat: number; lng: number } | null>(null);
+  const [localEnd, setLocalEnd] = useState<{ lat: number; lng: number } | null>(null);
+
+  // NEW: Decode polyline6 format (OSRM uses precision 6)
+  function decodePolyline(encoded: string, precision = 6): [number, number][] {
+    const factor = Math.pow(10, precision);
+    const coords: [number, number][] = [];
+    let lat = 0, lng = 0, index = 0;
+
+    while (index < encoded.length) {
+      let shift = 0, result = 0, byte;
+      do {
+        byte = encoded.charCodeAt(index++) - 63;
+        result |= (byte & 0x1f) << shift;
+        shift += 5;
+      } while (byte >= 0x20);
+      const dlat = (result & 1) ? ~(result >> 1) : (result >> 1);
+      lat += dlat;
+
+      shift = 0;
+      result = 0;
+      do {
+        byte = encoded.charCodeAt(index++) - 63;
+        result |= (byte & 0x1f) << shift;
+        shift += 5;
+      } while (byte >= 0x20);
+      const dlng = (result & 1) ? ~(result >> 1) : (result >> 1);
+      lng += dlng;
+
+      coords.push([lat / factor, lng / factor]);
+    }
+    return coords;
+  }
+
+  // NEW: Format instruction for tooltip
+  function formatInstruction(step: any): string {
+    const actions: { [key: string]: string } = {
+      'depart': 'Start',
+      'arrive': 'Arrive',
+      'turn': `Turn ${step.modifier || ''}`,
+      'continue': 'Continue',
+      'merge': 'Merge',
+      'on ramp': 'Take ramp',
+      'off ramp': 'Take exit',
+      'fork': `Fork ${step.modifier || ''}`,
+      'end of road': 'End of road',
+      'roundabout': 'Roundabout',
+    };
+    const action = actions[step.instruction] || 'Continue';
+    const name = step.name && step.name !== 'unnamed road' ? ` onto ${step.name}` : '';
+    return `${action}${name}`;
+  }
 
   // Helper: find nearest marker to a click
   function getNearestMarker(lat: number, lng: number) {
-    if (!startLocation && !endLocation) return null;
-    if (startLocation && !endLocation) return "start";
-    if (!startLocation && endLocation) return "end";
-    if (startLocation && endLocation) {
-      const startDist = Math.hypot(lat - startLocation.lat, lng - startLocation.lng);
-      const endDist = Math.hypot(lat - endLocation.lat, lng - endLocation.lng);
+    if (!localStart && !localEnd) return null;
+    if (localStart && !localEnd) return "start";
+    if (!localStart && localEnd) return "end";
+    if (localStart && localEnd) {
+      const startDist = Math.hypot(lat - localStart.lat, lng - localStart.lng);
+      const endDist = Math.hypot(lat - localEnd.lat, lng - localEnd.lng);
       return startDist < endDist ? "start" : "end";
     }
     return null;
@@ -62,7 +125,9 @@ export default function LeafletMap({
   // Initialize map
   useEffect(() => {
     if (!mapContainerRef.current) return;
-    const map = L.map(mapContainerRef.current).setView([40.7128, -74.006], 14);
+    const map = L.map(mapContainerRef.current, {
+      crs: L.CRS.EPSG3857, // Web Mercator - default
+    }).setView([40.7128, -74.006], 14);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: '© OpenStreetMap contributors',
       maxZoom: 19,
@@ -78,11 +143,198 @@ export default function LeafletMap({
   // Remove demo route markers, use only start/end selection
   useEffect(() => {
     if (!mapRef.current) return;
-    // Remove any demo route polylines/markers
-    Object.values(routeLayersRef.current).forEach((layer) => layer.remove());
+    // Clear all previous route polylines
+    Object.values(routeLayersRef.current).forEach((layer) => {
+      if (layer && mapRef.current?.hasLayer(layer)) {
+        try { layer.remove(); } catch {}
+      }
+    });
     routeLayersRef.current = {};
-    // ...existing code...
-  }, [routes, highlightedRouteId]);
+
+    // NEW: Clear step layers and markers
+    Object.values(stepLayersRef.current).forEach((layers) => {
+      layers.forEach((layer) => {
+        if (layer && mapRef.current?.hasLayer(layer)) {
+          try { layer.remove(); } catch {}
+        }
+      });
+    });
+    stepLayersRef.current = {};
+
+    Object.values(stepMarkersRef.current).forEach((markers) => {
+      markers.forEach((marker) => {
+        if (marker && mapRef.current?.hasLayer(marker)) {
+          try { marker.remove(); } catch {}
+        }
+      });
+    });
+    stepMarkersRef.current = {};
+
+    // Render new routes from API
+    routes.forEach((route, idx) => {
+      if (!route.geometry) return;
+      
+      try {
+        // Parse geometry if it's a string
+        let coords: [number, number][] = [];
+        if (typeof route.geometry === 'string') {
+          // Try to decode as polyline6 first (OSRM format)
+          try {
+            coords = decodePolyline(route.geometry, 6);
+          } catch {
+            // Try to parse as JSON
+            try {
+              const parsed = JSON.parse(route.geometry);
+              if (Array.isArray(parsed)) {
+                coords = parsed;
+              }
+            } catch {
+              return;
+            }
+          }
+        }
+        
+        if (!Array.isArray(coords) || coords.length === 0) return;
+
+        // Determine color based on selection
+        const isHighlighted = route.id === highlightedRouteId;
+        const color = isHighlighted ? "#ef4444" : idx === 0 ? "#3b82f6" : "#9ca3af";
+        const weight = isHighlighted ? 5 : 3;
+        const opacity = isHighlighted ? 1 : 0.6;
+
+        // Draw main route polyline (background)
+        const polyline = L.polyline(coords, {
+          color,
+          weight,
+          opacity: opacity * 0.3,
+          dashArray: isHighlighted ? "" : "4,4",
+        })
+          .bindPopup(`${route.name}`)
+          .addTo(mapRef.current!);
+
+        routeLayersRef.current[route.id] = polyline;
+
+        // NEW: If this is the highlighted route with steps, draw step segments
+        if (isHighlighted && route.steps && route.steps.length > 0) {
+          const stepLayers: L.Polyline[] = [];
+          const stepMarkers: L.CircleMarker[] = [];
+          
+          // Calculate cumulative distances to map steps to polyline segments
+          let distanceSoFar = 0;
+          const stepDistances = route.steps.map((step) => {
+            const start = distanceSoFar;
+            distanceSoFar += step.distance;
+            return { start, end: distanceSoFar };
+          });
+
+          // Calculate total route distance from coordinates
+          let totalRouteDistance = 0;
+          for (let i = 1; i < coords.length; i++) {
+            const [lat1, lng1] = coords[i - 1];
+            const [lat2, lng2] = coords[i];
+            totalRouteDistance += mapRef.current!.distance([lat1, lng1], [lat2, lng2]);
+          }
+
+          // Create segment for each step
+          route.steps.forEach((step, stepIdx) => {
+            const { start, end } = stepDistances[stepIdx];
+            const startRatio = start / totalRouteDistance;
+            const endRatio = end / totalRouteDistance;
+
+            // Find coordinate indices for this step
+            let currentDist = 0;
+            let startCoordIdx = 0;
+            let endCoordIdx = coords.length - 1;
+
+            for (let i = 1; i < coords.length; i++) {
+              const [lat1, lng1] = coords[i - 1];
+              const [lat2, lng2] = coords[i];
+              const segDist = mapRef.current!.distance([lat1, lng1], [lat2, lng2]);
+              
+              if (currentDist / totalRouteDistance <= startRatio && (currentDist + segDist) / totalRouteDistance >= startRatio) {
+                startCoordIdx = i - 1;
+              }
+              if (currentDist / totalRouteDistance <= endRatio && (currentDist + segDist) / totalRouteDistance >= endRatio) {
+                endCoordIdx = i;
+              }
+              
+              currentDist += segDist;
+            }
+
+            // Extract segment coordinates
+            const segmentCoords = coords.slice(startCoordIdx, endCoordIdx + 1);
+            if (segmentCoords.length < 2) return;
+
+            // Determine if this step is highlighted
+            const isStepHighlighted = highlightedStepIndex === stepIdx;
+            const stepColor = isStepHighlighted ? "#fbbf24" : "#ef4444";
+            const stepWeight = isStepHighlighted ? 7 : 5;
+            const stepOpacity = isStepHighlighted ? 1 : 0.7;
+
+            // Draw step segment
+            const stepPolyline = L.polyline(segmentCoords, {
+              color: stepColor,
+              weight: stepWeight,
+              opacity: stepOpacity,
+            })
+              .bindPopup(`
+                <div class="text-sm">
+                  <strong>Step ${step.step_number}</strong><br/>
+                  ${formatInstruction(step)}<br/>
+                  <span class="text-xs text-gray-500">
+                    ${(step.distance / 1000).toFixed(2)} km
+                  </span>
+                </div>
+              `)
+              .bindTooltip(`Step ${step.step_number}: ${formatInstruction(step)}`, {
+                permanent: false,
+                direction: 'top',
+              })
+              .on('click', () => {
+                onStepClick?.(stepIdx);
+              })
+              .on('mouseover', function(this: L.Polyline) {
+                this.setStyle({ weight: stepWeight + 2, opacity: 1 });
+              })
+              .on('mouseout', function(this: L.Polyline) {
+                this.setStyle({ weight: stepWeight, opacity: stepOpacity });
+              })
+              .addTo(mapRef.current!);
+
+            stepLayers.push(stepPolyline);
+
+            // Add marker at the start of each step
+            const [startLat, startLng] = segmentCoords[0];
+            const marker = L.circleMarker([startLat, startLng], {
+              radius: 5,
+              fillColor: isStepHighlighted ? "#fbbf24" : "#fff",
+              color: "#ef4444",
+              weight: 2,
+              opacity: 1,
+              fillOpacity: 0.8,
+            })
+              .bindTooltip(`${step.step_number}`, {
+                permanent: true,
+                direction: 'center',
+                className: 'step-number-label',
+              })
+              .on('click', () => {
+                onStepClick?.(stepIdx);
+                mapRef.current?.setView([startLat, startLng], 16, { animate: true });
+              })
+              .addTo(mapRef.current!);
+
+            stepMarkers.push(marker);
+          });
+
+          stepLayersRef.current[route.id] = stepLayers;
+          stepMarkersRef.current[route.id] = stepMarkers;
+        }
+      } catch (err) {
+        console.error("Error rendering route:", err, route);
+      }
+    });
+  }, [routes, highlightedRouteId, highlightedStepIndex, onStepClick]);
 
   // Update OSINT zones
   useEffect(() => {
@@ -135,24 +387,35 @@ export default function LeafletMap({
     });
   }, [osintZones, showOSINT]);
 
-  // Handle map clicks for start/end selection
+  // Handle map clicks for start/end selection (local state, then delegate to parent)
   useEffect(() => {
     if (!mapRef.current) return;
     const handleClick = (e: L.LeafletMouseEvent) => {
-      const { lat, lng } = e.latlng;
-      if (!startLocation && !endLocation) {
-        setStartLocation({ lat, lng });
+      let { lat, lng } = e.latlng;
+      
+      // Validate and sanitize coordinates
+      if (Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+        console.warn("Invalid coordinates from map click:", { lat, lng });
+        return; // Ignore invalid click
+      }
+      
+      if (!localStart && !localEnd) {
+        setLocalStart({ lat, lng });
         setInstruction("Now click to set end point");
-      } else if (startLocation && !endLocation) {
-        setEndLocation({ lat, lng });
+        onLocationSelect?.(lat, lng, "start");
+      } else if (localStart && !localEnd) {
+        setLocalEnd({ lat, lng });
         setInstruction("Click to update nearest marker");
-      } else if (startLocation && endLocation) {
-        // Update nearest marker
-        const nearest = getNearestMarker(lat, lng);
-        if (nearest === "start") {
-          setStartLocation({ lat, lng });
+        onLocationSelect?.(lat, lng, "end");
+      } else if (localStart && localEnd) {
+        const startDist = Math.hypot(lat - localStart.lat, lng - localStart.lng);
+        const endDist = Math.hypot(lat - localEnd.lat, lng - localEnd.lng);
+        if (startDist < endDist) {
+          setLocalStart({ lat, lng });
+          onLocationSelect?.(lat, lng, "start");
         } else {
-          setEndLocation({ lat, lng });
+          setLocalEnd({ lat, lng });
+          onLocationSelect?.(lat, lng, "end");
         }
       }
     };
@@ -160,27 +423,27 @@ export default function LeafletMap({
     return () => {
       mapRef.current?.off("click", handleClick);
     };
-  }, [startLocation, endLocation]);
+  }, [localStart, localEnd, onLocationSelect]);
 
-  // Draw/update start/end markers and polyline
+  // Draw/update start/end markers and polyline using local state
   useEffect(() => {
     if (!mapRef.current) return;
-    // Remove old markers/polyline
+    // Remove old markers/polyline with defensive checks
     if (startMarkerRef.current) {
-      startMarkerRef.current.remove();
+      try { startMarkerRef.current.remove(); } catch {}
       startMarkerRef.current = null;
     }
     if (endMarkerRef.current) {
-      endMarkerRef.current.remove();
+      try { endMarkerRef.current.remove(); } catch {}
       endMarkerRef.current = null;
     }
     if (polylineRef.current) {
-      polylineRef.current.remove();
+      try { polylineRef.current.remove(); } catch {}
       polylineRef.current = null;
     }
-    // Add start marker
-    if (startLocation) {
-      startMarkerRef.current = L.circleMarker([startLocation.lat, startLocation.lng], {
+    // Draw start marker
+    if (localStart) {
+      startMarkerRef.current = L.circleMarker([localStart.lat, localStart.lng], {
         radius: 10,
         fillColor: "#22c55e",
         color: "#16a34a",
@@ -191,9 +454,9 @@ export default function LeafletMap({
         .bindPopup("Start Location")
         .addTo(mapRef.current!);
     }
-    // Add end marker
-    if (endLocation) {
-      endMarkerRef.current = L.circleMarker([endLocation.lat, endLocation.lng], {
+    // Draw end marker
+    if (localEnd) {
+      endMarkerRef.current = L.circleMarker([localEnd.lat, localEnd.lng], {
         radius: 10,
         fillColor: "#fff",
         color: "#ef4444",
@@ -205,11 +468,11 @@ export default function LeafletMap({
         .bindPopup("End Location")
         .addTo(mapRef.current!);
     }
-    // Draw polyline
-    if (startLocation && endLocation) {
+    // Draw polyline if both exist
+    if (localStart && localEnd) {
       polylineRef.current = L.polyline([
-        [startLocation.lat, startLocation.lng],
-        [endLocation.lat, endLocation.lng],
+        [localStart.lat, localStart.lng],
+        [localEnd.lat, localEnd.lng],
       ], {
         color: "#6366f1",
         weight: 4,
@@ -217,7 +480,7 @@ export default function LeafletMap({
         dashArray: "6, 6",
       }).addTo(mapRef.current!);
     }
-  }, [startLocation, endLocation]);
+  }, [localStart, localEnd]);
 
   return (
     <div className="w-full h-full flex flex-col">
@@ -230,24 +493,23 @@ export default function LeafletMap({
         className="flex-1 bg-gray-100 rounded-lg border border-gray-300"
         style={{ minHeight: "500px" }}
       />
-
-      {/* Coordinates display */}
+      {/* Coordinates display below map */}
       <div className="mt-2 px-4 text-xs text-gray-700">
-        {startLocation && (
-          <div>Start: {startLocation.lat.toFixed(5)}, {startLocation.lng.toFixed(5)}</div>
+        {localStart && (
+          <div>Start: 📍 {localStart.lat.toFixed(5)}, {localStart.lng.toFixed(5)}</div>
         )}
-        {endLocation && (
-          <div>End: {endLocation.lat.toFixed(5)}, {endLocation.lng.toFixed(5)}</div>
+        {localEnd && (
+          <div>End: 🎯 {localEnd.lat.toFixed(5)}, {localEnd.lng.toFixed(5)}</div>
         )}
       </div>
-
       {/* Reset button */}
       <div className="mt-2 px-4">
         <button
           onClick={() => {
-            setStartLocation(null);
-            setEndLocation(null);
+            setLocalStart(null);
+            setLocalEnd(null);
             setInstruction("Click to set start and end points");
+            onLocationSelect?.(null as any, null as any, "reset");
           }}
           className="px-3 py-2 text-xs rounded-md bg-gray-200 text-gray-700 hover:bg-gray-300 border"
         >
@@ -259,6 +521,18 @@ export default function LeafletMap({
       <style>{`
         .grayscale-map img {
           filter: grayscale(100%);
+        }
+        .step-number-label {
+          background: transparent !important;
+          border: none !important;
+          box-shadow: none !important;
+          font-weight: bold;
+          font-size: 10px;
+          color: #fff;
+          text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+        }
+        .step-number-label::before {
+          display: none !important;
         }
       `}</style>
     </div>
