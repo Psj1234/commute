@@ -101,3 +101,43 @@ export const RCI_WEIGHTS = {
   delayVariance: 0.1,
   lastMileAvail: 0.1,
 };
+
+// MULTI-MODAL ROUTING TYPES (NON-BREAKING EXTENSION)
+export type TransportMode = "CAR" | "TRAIN" | "FLIGHT" | "WALK" | "METRO";
+
+export interface RouteLeg {
+  leg_id: string;
+  mode: TransportMode;
+  start_lat: number;
+  start_lng: number;
+  end_lat: number;
+  end_lng: number;
+  travel_time_minutes: number;
+  wait_time_minutes: number;
+  crowd_score: number; // 0-1
+  distance_km: number;
+  geometry: string; // polyline6
+  transfer_time_minutes?: number; // time to transfer between legs
+}
+
+export interface MultiModalRoute {
+  route_id: string;
+  mode_type: "SINGLE" | "MULTI";
+  name: string;
+  start_lat: number;
+  start_lng: number;
+  end_lat: number;
+  end_lng: number;
+  total_travel_time: number; // minutes (sum of all legs including wait)
+  total_distance_km: number;
+  transfer_count: number; // number of legs - 1
+  legs: RouteLeg[];
+  geometry: string; // combined polyline of all legs
+  rci: number;
+  components?: {
+    crowd_stability?: number;
+    transfer_success?: number;
+  };
+  persona_score?: number;
+  persona_explanation?: string;
+}

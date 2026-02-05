@@ -2,7 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuidv4 } from "uuid";
 import prisma from "@/app/lib/prisma";
 import { computeRCI, bucketTime, inferPersona } from "@/app/lib/intelligence-engine";
-import { calculateEnhancedRCI, compareRoutesForReliability } from "@/app/lib/enhanced-rci";
+import { 
+  calculateEnhancedRCI, 
+  compareRoutesForReliability,
+  rankRoutesByPersona,
+  type CommutePersona
+} from "@/app/lib/enhanced-rci";
+import { generateMultiModalRoutes, formatRouteMode } from "@/app/lib/multimodal-routes";
+import { generateTransitRoutes } from "@/app/lib/transit-routes";
 import { getActiveOSINTZones } from "@/app/lib/osint-data";
 
 
@@ -61,8 +68,12 @@ async function fetchRoutesFromOSRM(start: { lat: number; lng: number }, end: { l
 
 export async function POST(req: NextRequest) {
   try {
-    let { start, end, userId } = await req.json();
+    let { start, end, userId, persona } = await req.json();
     if (!start || !end) return NextResponse.json({ error: "Missing start/end" }, { status: 400 });
+
+    // Validate persona (optional, defaults to SAFE_PLANNER)
+    const validPersonas: CommutePersona[] = ["RUSHER", "SAFE_PLANNER", "COMFORT_SEEKER", "EXPLORER"];
+    const selectedPersona: CommutePersona = validPersonas.includes(persona) ? persona : "SAFE_PLANNER";
 
     // Validate and fix coordinates
     const isValidCoord = (coord: any) => 
@@ -204,19 +215,140 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // NEW: Sort routes by RCI (highest first) instead of ETA
-    routes.sort((a, b) => b.rci - a.rci);
+    // NEW: Generate multi-modal routes (ADDITIVE - doesn't affect single-mode routes)
+    // Graceful fallback: if multi-modal generation fails, we simply continue with single-mode routes
+    let allRoutes: any[] = routes;
+    try {
+      const multiModalRoutes = await generateMultiModalRoutes(
+        start.lat,
+        start.lng,
+        end.lat,
+        end.lng,
+        currentTime,
+        userPersona,
+        osintZones,
+        calculateEnhancedRCI
+      );
+
+      if (multiModalRoutes && multiModalRoutes.length > 0) {
+        // Append multi-modal routes after single-mode routes
+        allRoutes = [
+          ...routes,
+          ...multiModalRoutes.map(mmRoute => ({
+            ...mmRoute,
+            mode_type: "MULTI",
+            route_mode_string: formatRouteMode("MULTI", mmRoute.legs),
+          })) as any,
+        ];
+        console.log(`Generated ${multiModalRoutes.length} multi-modal routes alongside ${routes.length} single-mode routes`);
+      }
+    } catch (mmErr: any) {
+      console.warn("Multi-modal route generation failed, continuing with single-mode routes only:", mmErr);
+      // No-op: allRoutes remains the single-mode routes array
+    }
+
+    // NEW: Generate transit routes (TRAIN/METRO - ADDITIVE)
+    // Graceful fallback: if transit generation fails, we continue without transit routes
+    try {
+      const transitRoutes = await generateTransitRoutes(
+        start.lat,
+        start.lng,
+        end.lat,
+        end.lng,
+        currentTime,
+        userPersona,
+        osintZones,
+        calculateEnhancedRCI
+      );
+
+      if (transitRoutes && transitRoutes.length > 0) {
+        // Append transit routes after single-mode and multi-modal routes
+        allRoutes = [
+          ...allRoutes,
+          ...transitRoutes.map(transitRoute => ({
+            ...transitRoute,
+            mode_type: "TRANSIT",
+          })) as any,
+        ];
+        console.log(`Generated ${transitRoutes.length} transit routes alongside existing routes`);
+      }
+    } catch (transitErr: any) {
+      console.warn("Transit route generation failed, continuing without transit routes:", transitErr);
+      // No-op: allRoutes remains as-is (single-mode + multi-modal)
+    }
+
+    // Add mode_type to single-mode routes for consistency
+    // Also normalize duration fields for persona ranking
+    const allRoutesWithModeType = allRoutes.map((route: any) => {
+      // Normalize duration fields for compatibility
+      let normalizedRoute = { ...route };
+      
+      if (route.mode_type === "SINGLE") {
+        // Single-mode routes already have duration in seconds
+        normalizedRoute.duration = route.duration; // seconds (original)
+        normalizedRoute.total_travel_time = route.duration / 60; // convert to minutes
+        normalizedRoute.mode_type = "SINGLE";
+        normalizedRoute.route_mode_string = "Car";
+      } else if (route.mode_type === "MULTI") {
+        // Multi-modal routes already have duration fields
+        normalizedRoute.duration = normalizedRoute.total_travel_time * 60; // convert minutes to seconds for compatibility
+        normalizedRoute.transfer_count = route.transfer_count || 0;
+      } else if (route.mode_type === "TRANSIT") {
+        // Transit routes: use total_travel_time (minutes) and convert to seconds
+        normalizedRoute.duration = normalizedRoute.total_travel_time * 60; // convert minutes to seconds
+        normalizedRoute.transfer_count = route.transfer_count || 0;
+        normalizedRoute.wait_time = route.wait_time || 0; // Include wait time for transit
+      }
+      
+      return normalizedRoute;
+    });
+
+    // NEW: Apply persona-based ranking (NON-DESTRUCTIVE)
+    // If persona ranking fails, fallback to RCI-sorted routes
+    let rankedRoutes = allRoutesWithModeType;
+    let personaExplanation = "";
     
-    // Update preferred route to the highest RCI route
-    const rciPreferredRouteId = routes[0]?.route_id;
+    try {
+      const personaRanked = rankRoutesByPersona(allRoutesWithModeType, selectedPersona);
+      if (personaRanked && personaRanked.length > 0) {
+        // Extract routes in persona-preferred order
+        rankedRoutes = personaRanked.map(scored => ({
+          ...scored.route,
+          persona_score: scored.persona_score,
+          persona_explanation: scored.persona_explanation,
+        }));
+        personaExplanation = personaRanked[0].persona_explanation;
+      } else {
+        // Fallback: sort by RCI
+        rankedRoutes.sort((a, b) => b.rci - a.rci);
+      }
+    } catch (personaError) {
+      console.warn("Persona ranking failed, using RCI fallback:", personaError);
+      // Fallback: sort by RCI (highest first)
+      rankedRoutes.sort((a, b) => b.rci - a.rci);
+    }
+    
+    // Update preferred route to persona's top choice (or highest RCI as fallback)
+    const personaPreferredRouteId = rankedRoutes[0]?.route_id;
+
+    // Count route types for debugging
+    const singleModeCount = rankedRoutes.filter((r: any) => r.mode_type === "SINGLE").length;
+    const multiModalCount = rankedRoutes.filter((r: any) => r.mode_type === "MULTI").length;
 
     return NextResponse.json({ 
-      routes, 
+      routes: rankedRoutes, 
       maps_preferred_route_id: mapsPreferredRouteId,
-      rci_preferred_route_id: rciPreferredRouteId,
+      rci_preferred_route_id: personaPreferredRouteId, // Now persona-aware
       route_comparison: routeComparison,
+      persona_explanation: personaExplanation,
+      selected_persona: selectedPersona,
       time_window: timeWindow,
       user_persona: userPersona,
+      route_stats: {
+        total_routes: rankedRoutes.length,
+        single_mode_routes: singleModeCount,
+        multi_modal_routes: multiModalCount,
+      }
     });
   } catch (error: any) {
     console.error("/api/routes/generate error:", error);

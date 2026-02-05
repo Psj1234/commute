@@ -17,6 +17,12 @@ const LeafletMap = dynamic(() => import("@/app/components/LeafletMap"), {
   loading: () => <div className="bg-zinc-100 rounded-lg h-96 flex items-center justify-center border border-zinc-200 text-zinc-500">Loading map...</div>,
 });
 
+// NEW: Import TransitRouteDetails component
+const TransitRouteDetails = dynamic(() => import("@/app/components/TransitRouteDetails"), {
+  ssr: false,
+  loading: () => <div className="text-center py-4 text-zinc-500">Loading transit details...</div>,
+});
+
 interface RouteData {
   id: string;
   name: string;
@@ -78,6 +84,11 @@ export default function Dashboard() {
   const [travelMode, setTravelMode] = useState<TravelMode>('all');
   const [multiModalRoutes, setMultiModalRoutes] = useState<MultiModalRoute[]>([]);
   const [selectedMultiModalRoute, setSelectedMultiModalRoute] = useState<MultiModalRoute | null>(null);
+  
+  // NEW: Persona state
+  const [selectedPersona, setSelectedPersona] = useState<"RUSHER" | "SAFE_PLANNER" | "COMFORT_SEEKER" | "EXPLORER">("SAFE_PLANNER");
+  const [personaExplanation, setPersonaExplanation] = useState<string>("");
+
 
   useEffect(() => {
     const id = getOrCreateUserId();
@@ -114,12 +125,23 @@ export default function Dashboard() {
       fetch("/api/routes/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ start: startLocation, end: endLocation, userId }),
+      body: JSON.stringify({ 
+        start: startLocation, 
+        end: endLocation, 
+        userId,
+        persona: selectedPersona // NEW: Send persona to backend
+      }),
     })
       .then(async (res) => {
         if (!res.ok) throw new Error("Failed to fetch routes");
         const data = await res.json();
         setRoutes(data.routes);
+        
+        // NEW: Store persona explanation
+        if (data.persona_explanation) {
+          setPersonaExplanation(data.persona_explanation);
+        }
+        
         // Find most reliable (highest RCI)
         let bestRCI = -1;
         let bestRoute = null;
@@ -151,7 +173,7 @@ export default function Dashboard() {
       // If not fetching road routes, loading is done after multi-modal fetch
       setLoading(false);
     }
-  }, [startLocation, endLocation, userId, travelMode]); // NEW: Added travelMode dependency
+  }, [startLocation, endLocation, userId, travelMode, selectedPersona]); // NEW: Added selectedPersona dependency
 
   function simulateDelayEvent() {
     setSimulatingDelay(true);
@@ -339,7 +361,83 @@ export default function Dashboard() {
                 )}
               </div>
 
-              <p className="text-xs text-zinc-500">Or click on the map to select locations</p>
+              <p className="text-xs text-zinc-500">Use the search boxes above to enter locations</p>
+            </div>
+
+            {/* NEW: Persona Selector */}
+            <div className="bg-white rounded-lg border-2 border-zinc-200 p-4">
+              <h3 className="font-semibold text-sm text-zinc-900 mb-3">🧠 Route Preferences</h3>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => setSelectedPersona("RUSHER")}
+                  className={`p-3 rounded-lg border-2 transition-all text-left ${
+                    selectedPersona === "RUSHER"
+                      ? "border-zinc-900 bg-zinc-50"
+                      : "border-zinc-200 hover:border-zinc-300"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-lg">⚡</span>
+                    <span className="font-semibold text-xs text-zinc-900">Rusher</span>
+                  </div>
+                  <p className="text-[10px] text-zinc-600">Fastest with acceptable risk</p>
+                </button>
+
+                <button
+                  onClick={() => setSelectedPersona("SAFE_PLANNER")}
+                  className={`p-3 rounded-lg border-2 transition-all text-left ${
+                    selectedPersona === "SAFE_PLANNER"
+                      ? "border-zinc-900 bg-zinc-50"
+                      : "border-zinc-200 hover:border-zinc-300"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-lg">🛡️</span>
+                    <span className="font-semibold text-xs text-zinc-900">Safe Planner</span>
+                  </div>
+                  <p className="text-[10px] text-zinc-600">Highest reliability first</p>
+                </button>
+
+                <button
+                  onClick={() => setSelectedPersona("COMFORT_SEEKER")}
+                  className={`p-3 rounded-lg border-2 transition-all text-left ${
+                    selectedPersona === "COMFORT_SEEKER"
+                      ? "border-zinc-900 bg-zinc-50"
+                      : "border-zinc-200 hover:border-zinc-300"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-lg">🛋️</span>
+                    <span className="font-semibold text-xs text-zinc-900">Comfort Seeker</span>
+                  </div>
+                  <p className="text-[10px] text-zinc-600">Less crowded, smoother</p>
+                </button>
+
+                <button
+                  onClick={() => setSelectedPersona("EXPLORER")}
+                  className={`p-3 rounded-lg border-2 transition-all text-left ${
+                    selectedPersona === "EXPLORER"
+                      ? "border-zinc-900 bg-zinc-50"
+                      : "border-zinc-200 hover:border-zinc-300"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-lg">🧭</span>
+                    <span className="font-semibold text-xs text-zinc-900">Explorer</span>
+                  </div>
+                  <p className="text-[10px] text-zinc-600">Balanced across factors</p>
+                </button>
+              </div>
+              {selectedPersona && (
+                <div className="mt-3 p-2 bg-blue-50 border border-blue-200 rounded text-[10px] text-blue-800">
+                  <strong>Active:</strong> {
+                    selectedPersona === "RUSHER" ? "Prioritizes speed with acceptable reliability" :
+                    selectedPersona === "SAFE_PLANNER" ? "Prioritizes highest reliability" :
+                    selectedPersona === "COMFORT_SEEKER" ? "Avoids crowds and transfers" :
+                    "Balanced approach across all factors"
+                  }
+                </div>
+              )}
             </div>
 
             {/* NEW: Travel Mode Selector */}
@@ -421,36 +519,8 @@ export default function Dashboard() {
                     stepElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
                   }, 100);
                 }}
-                onLocationSelect={(lat, lng, type) => {
-                  if (type === "start") {
-                    setStartLocation({ lat, lng });
-                    // Reverse geocode start
-                    fetch(`/api/geocode/reverse?lat=${lat}&lng=${lng}`)
-                      .then(res => res.json())
-                      .then(data => {
-                        setStartLocation(loc => ({ ...loc!, label: data.label || `${lat.toFixed(5)}, ${lng.toFixed(5)}` }));
-                      })
-                      .catch(() => {
-                        setStartLocation(loc => ({ ...loc!, label: `${lat.toFixed(5)}, ${lng.toFixed(5)}` }));
-                      });
-                  } else if (type === "end") {
-                    setEndLocation({ lat, lng });
-                    // Reverse geocode end
-                    fetch(`/api/geocode/reverse?lat=${lat}&lng=${lng}`)
-                      .then(res => res.json())
-                      .then(data => {
-                        setEndLocation(loc => ({ ...loc!, label: data.label || `${lat.toFixed(5)}, ${lng.toFixed(5)}` }));
-                      })
-                      .catch(() => {
-                        setEndLocation(loc => ({ ...loc!, label: `${lat.toFixed(5)}, ${lng.toFixed(5)}` }));
-                      });
-                  } else if (type === "reset") {
-                    setStartLocation(null);
-                    setEndLocation(null);
-                    setRoutes([]);
-                    setSelectedRoute(null);
-                  }
-                }}
+                // DISABLED: Map click location picking - use text search only
+                // onLocationSelect disabled to enforce text-based location input
               />
             </Suspense>
 
@@ -486,18 +556,41 @@ export default function Dashboard() {
               {!loading && routes.length >= 2 && (
                 <div className="mb-4 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-indigo-300 rounded-lg">
                   <div className="flex items-start gap-3">
-                    <span className="text-2xl">🧠</span>
+                    <span className="text-2xl">
+                      {selectedPersona === "RUSHER" ? "⚡" :
+                       selectedPersona === "SAFE_PLANNER" ? "🛡️" :
+                       selectedPersona === "COMFORT_SEEKER" ? "🛋️" : "🧭"}
+                    </span>
                     <div className="flex-1">
-                      <h3 className="font-semibold text-indigo-900 mb-1">Intelligence Recommendation</h3>
+                      <h3 className="font-semibold text-indigo-900 mb-1">
+                        {selectedPersona === "RUSHER" ? "Rusher Mode" :
+                         selectedPersona === "SAFE_PLANNER" ? "Safe Planner Mode" :
+                         selectedPersona === "COMFORT_SEEKER" ? "Comfort Seeker Mode" : "Explorer Mode"} - Recommendation
+                      </h3>
+                      
+                      {/* NEW: Persona Explanation */}
+                      {personaExplanation && (
+                        <div className="mb-2 p-2 bg-white rounded border border-indigo-200">
+                          <p className="text-xs text-indigo-800 font-medium">{personaExplanation}</p>
+                        </div>
+                      )}
+                      
                       <p className="text-sm text-indigo-700 leading-relaxed">
-                        Route sorted by <strong>reliability</strong>, not speed. The most reliable route is shown first, 
-                        even if it's slower. This prioritizes on-time arrivals over fastest ETA.
+                        Routes ranked by <strong>
+                          {selectedPersona === "RUSHER" ? "speed with acceptable reliability" :
+                           selectedPersona === "SAFE_PLANNER" ? "highest reliability" :
+                           selectedPersona === "COMFORT_SEEKER" ? "comfort and smoothness" : "balanced factors"}
+                        </strong>.
+                        {selectedPersona === "SAFE_PLANNER" && " The most reliable route is shown first, even if it's slower."}
+                        {selectedPersona === "RUSHER" && " Fastest routes with RCI ≥ 50% shown first."}
+                        {selectedPersona === "COMFORT_SEEKER" && " Less crowded routes with fewer transfers prioritized."}
+                        {selectedPersona === "EXPLORER" && " Routes balanced across speed, reliability, and comfort."}
                       </p>
                       {routes[0] && routes[1] && (
                         <div className="mt-3 p-3 bg-white rounded border border-indigo-200">
                           <div className="text-xs space-y-2">
                             <div className="flex justify-between items-center">
-                              <span className="font-medium text-zinc-700">Most Reliable:</span>
+                              <span className="font-medium text-zinc-700">Top Choice:</span>
                               <span className={`font-bold ${
                                 routes[0].rci >= 0.75 ? 'text-green-600' : 
                                 routes[0].rci >= 0.55 ? 'text-yellow-600' : 
@@ -517,9 +610,13 @@ export default function Dashboard() {
                               </span>
                             </div>
                             <div className="flex justify-between items-center">
-                              <span className="font-medium text-zinc-700">Reliability Gain:</span>
+                              <span className="font-medium text-zinc-700">
+                                {selectedPersona === "RUSHER" ? "Speed Priority:" : "Reliability Gain:"}
+                              </span>
                               <span className="text-green-600 font-semibold">
-                                +{((routes[0].rci - routes[1].rci) * 100).toFixed(0)}% more reliable
+                                {selectedPersona === "RUSHER" 
+                                  ? `${(routes[0].base_eta || Math.round(routes[0].duration / 60))} min`
+                                  : `+${((routes[0].rci - routes[1].rci) * 100).toFixed(0)}% more reliable`}
                               </span>
                             </div>
                           </div>
@@ -556,8 +653,29 @@ export default function Dashboard() {
                         >
                           <div className="flex justify-between items-start mb-2">
                             <div className="flex items-center gap-2">
-                              <span className="text-lg">🚗</span>
+                              {/* NEW: Multi-modal route badge with leg icons */}
+                              {route.mode_type === "MULTI" && route.legs && route.legs.length > 0 ? (
+                                <div className="flex items-center gap-1">
+                                  {route.legs.map((leg: any, idx: number) => (
+                                    <span key={`${route.route_id}-leg-${idx}`}>
+                                      {leg.mode === "CAR" ? "🚗" :
+                                       leg.mode === "TRAIN" ? "🚆" :
+                                       leg.mode === "FLIGHT" ? "✈️" :
+                                       leg.mode === "WALK" ? "🚶" : "?"}
+                                      {idx < route.legs.length - 1 && <span className="text-xs text-gray-400">→</span>}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-lg">🚗</span>
+                              )}
                               <h3 className="font-semibold text-zinc-900 text-sm">{route.name || "Route"}</h3>
+                              {/* NEW: Route mode label for multi-modal */}
+                              {route.mode_type === "MULTI" && (
+                                <span className="text-xs bg-indigo-100 text-indigo-800 px-2 py-1 rounded font-medium">
+                                  {route.legs?.map((l: any) => l.mode).join(" + ") || "Multi-Modal"}
+                                </span>
+                              )}
                               {route.is_maps_preferred && (
                                 <span className="text-xs bg-blue-600 text-white px-2 py-1 rounded">Maps Preferred</span>
                               )}
@@ -574,12 +692,38 @@ export default function Dashboard() {
                           <div className="space-y-1 text-xs text-zinc-600">
                             <div className="flex justify-between">
                               <span>Distance:</span>
-                              <span className="font-medium">{route.distance} km</span>
+                              <span className="font-medium">{route.distance || route.total_distance_km} km</span>
                             </div>
                             <div className="flex justify-between">
                               <span>ETA:</span>
-                              <span className="font-medium">{route.base_eta || Math.round((route.duration || 0) / 60)} min</span>
+                              <span className="font-medium">{route.base_eta || route.total_travel_time || Math.round((route.duration || 0) / 60)} min</span>
                             </div>
+                            
+                            {/* NEW: Multi-modal route additional info */}
+                            {route.mode_type === "MULTI" && (
+                              <>
+                                <div className="flex justify-between">
+                                  <span>Transfers:</span>
+                                  <span className="font-medium text-amber-700">{route.transfer_count || (route.legs?.length - 1 || 0)}</span>
+                                </div>
+                                {route.legs && route.legs.length > 0 && (
+                                  <div className="mt-2 pt-1 border-t border-zinc-300">
+                                    <div className="text-xs font-semibold text-zinc-700 mb-1">Legs:</div>
+                                    {route.legs.map((leg: any, idx: number) => (
+                                      <div key={`${route.route_id}-leg-details-${idx}`} className="text-[10px] text-zinc-500 flex justify-between">
+                                        <span>
+                                          {leg.mode === "CAR" ? "🚗" :
+                                           leg.mode === "TRAIN" ? "🚆" :
+                                           leg.mode === "FLIGHT" ? "✈️" :
+                                           leg.mode === "WALK" ? "🚶" : "?"} {leg.mode}
+                                        </span>
+                                        <span>{leg.travel_time_minutes}m{leg.wait_time_minutes > 0 ? ` +${leg.wait_time_minutes}m` : ""}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </>
+                            )}
                             
                             {/* NEW: Enhanced RCI Display with Confidence Level */}
                             <div className="mt-2 p-2 rounded bg-zinc-100 border border-zinc-300">
@@ -642,6 +786,18 @@ export default function Dashboard() {
                             {route.explanation && (
                               <div className="text-xs text-blue-700 mt-2 p-2 bg-blue-50 rounded border border-blue-200">
                                 {route.explanation}
+                              </div>
+                            )}
+                            
+                            {/* NEW: Persona Explanation (if available) */}
+                            {route.persona_explanation && (
+                              <div className="text-xs text-purple-700 mt-2 p-2 bg-purple-50 rounded border border-purple-200 flex items-start gap-1">
+                                <span>
+                                  {selectedPersona === "RUSHER" ? "⚡" :
+                                   selectedPersona === "SAFE_PLANNER" ? "🛡️" :
+                                   selectedPersona === "COMFORT_SEEKER" ? "🛋️" : "🧭"}
+                                </span>
+                                <span>{route.persona_explanation}</span>
                               </div>
                             )}
                             
@@ -796,6 +952,25 @@ export default function Dashboard() {
                     </div>
                   )}
                 </div>
+
+                {/* NEW: Transit Route Details Section */}
+                {selectedRoute.mode_type === "TRANSIT" && selectedRoute.legs && selectedRoute.legs.length > 0 && (
+                  <div className="pt-4 border-t border-zinc-300">
+                    <h4 className="font-semibold text-zinc-900 mb-4 flex items-center gap-2">
+                      <span>🚇 Transit Journey Details</span>
+                    </h4>
+                    <Suspense fallback={<div className="text-center py-4 text-zinc-500">Loading transit details...</div>}>
+                      <TransitRouteDetails
+                        legs={selectedRoute.legs}
+                        totalTime={selectedRoute.base_eta || selectedRoute.total_travel_time || Math.round((selectedRoute.duration || 0) / 60)}
+                        totalWaitTime={selectedRoute.wait_time || 0}
+                        transferCount={selectedRoute.transfer_count || 0}
+                        distance={selectedRoute.distance || selectedRoute.total_distance_km || 0}
+                        rci={selectedRoute.rci}
+                      />
+                    </Suspense>
+                  </div>
+                )}
 
                 {/* NEW: RCI Component Breakdown */}
                 {selectedRoute.original_rci && (

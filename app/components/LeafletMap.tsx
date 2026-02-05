@@ -55,7 +55,7 @@ export default function LeafletMap({
   const startMarkerRef = useRef<L.Marker | null>(null);
   const endMarkerRef = useRef<L.Marker | null>(null);
   const polylineRef = useRef<L.Polyline | null>(null);
-  const [instruction, setInstruction] = useState<string>("Click to set start and end points");
+  const [instruction, setInstruction] = useState<string>("Text-based location search enabled. Use the search box to enter start and destination.");
   const [localStart, setLocalStart] = useState<{ lat: number; lng: number } | null>(null);
   const [localEnd, setLocalEnd] = useState<{ lat: number; lng: number } | null>(null);
 
@@ -387,43 +387,8 @@ export default function LeafletMap({
     });
   }, [osintZones, showOSINT]);
 
-  // Handle map clicks for start/end selection (local state, then delegate to parent)
-  useEffect(() => {
-    if (!mapRef.current) return;
-    const handleClick = (e: L.LeafletMouseEvent) => {
-      let { lat, lng } = e.latlng;
-      
-      // Validate and sanitize coordinates
-      if (Math.abs(lat) > 90 || Math.abs(lng) > 180) {
-        console.warn("Invalid coordinates from map click:", { lat, lng });
-        return; // Ignore invalid click
-      }
-      
-      if (!localStart && !localEnd) {
-        setLocalStart({ lat, lng });
-        setInstruction("Now click to set end point");
-        onLocationSelect?.(lat, lng, "start");
-      } else if (localStart && !localEnd) {
-        setLocalEnd({ lat, lng });
-        setInstruction("Click to update nearest marker");
-        onLocationSelect?.(lat, lng, "end");
-      } else if (localStart && localEnd) {
-        const startDist = Math.hypot(lat - localStart.lat, lng - localStart.lng);
-        const endDist = Math.hypot(lat - localEnd.lat, lng - localEnd.lng);
-        if (startDist < endDist) {
-          setLocalStart({ lat, lng });
-          onLocationSelect?.(lat, lng, "start");
-        } else {
-          setLocalEnd({ lat, lng });
-          onLocationSelect?.(lat, lng, "end");
-        }
-      }
-    };
-    mapRef.current.on("click", handleClick);
-    return () => {
-      mapRef.current?.off("click", handleClick);
-    };
-  }, [localStart, localEnd, onLocationSelect]);
+  // DISABLED: Map click location picking - use text search instead
+  // Previous functionality removed to enforce text-only location input via Nominatim geocoding
 
   // Draw/update start/end markers and polyline using local state
   useEffect(() => {
@@ -502,20 +467,7 @@ export default function LeafletMap({
           <div>End: 🎯 {localEnd.lat.toFixed(5)}, {localEnd.lng.toFixed(5)}</div>
         )}
       </div>
-      {/* Reset button */}
-      <div className="mt-2 px-4">
-        <button
-          onClick={() => {
-            setLocalStart(null);
-            setLocalEnd(null);
-            setInstruction("Click to set start and end points");
-            onLocationSelect?.(null as any, null as any, "reset");
-          }}
-          className="px-3 py-2 text-xs rounded-md bg-gray-200 text-gray-700 hover:bg-gray-300 border"
-        >
-          Reset Locations
-        </button>
-      </div>
+      {/* Reset button removed - text-based input only */}
 
       {/* Greyscale filter for the whole map */}
       <style>{`

@@ -2,6 +2,9 @@
 import { bucketTime, computeRCI, applyOSINTScoring } from "./intelligence-engine";
 import type { OSINTZone } from "./osint-data";
 
+// Persona types for route preference
+export type CommutePersona = "RUSHER" | "SAFE_PLANNER" | "COMFORT_SEEKER" | "EXPLORER";
+
 export interface FailureHistoryRecord {
   route_signature: string; // hash of start+end coords
   time_window: string; // "08:30-08:45"
@@ -154,7 +157,12 @@ export function calculateEnhancedRCI(
   distance: number, // km
   currentTime: Date,
   userPersona: "RUSHER" | "SAFE_PLANNER" | "COMFORT_SEEKER" | "EXPLORER" = "SAFE_PLANNER",
-  osintZones?: OSINTZone[]
+  osintZones?: OSINTZone[],
+  transitOptions?: {
+    transit_mode?: boolean;
+    crowd_stability?: number;
+    transfer_count?: number;
+  }
 ): EnhancedRCIResult {
   const timeWindow = bucketTime(currentTime);
   const riskFactors: string[] = [];
@@ -246,6 +254,71 @@ export function calculateEnhancedRCI(
   } else if (userPersona === "SAFE_PLANNER" && failurePenalty > 0.15) {
     failurePenalty += PERSONA_ADJUSTMENTS.SAFE_PLANNER.avoid_failures;
   }
+
+  // NEW: Apply transit-specific adjustments
+  let transitBonus = 0;
+  if (transitOptions?.transit_mode) {
+    // Transit routes are generally more reliable than driving (less affected by traffic)
+    transferSuccess = 0.85; // Higher transfer success for transit
+    crowdStability = transitOptions.crowd_stability ?? 0.65; // Use provided or default
+    delayVariance = 0.88; // Transit schedules are more predictable
+    lastMileAvail = 0.90; // Good availability of transit connections
+    
+    // Apply transfer count penalty (each transfer reduces reliability)
+    const transfer_count = transitOptions.transfer_count ?? 0;
+    if (transfer_count > 0) {
+      transferSuccess -= transfer_count * 0.05; // -5% per transfer
+      riskFactors.push(
+        `🔄 ${transfer_count} transfer(s) required (each -5% transfer success)`
+      );
+    }
+    
+    // Persona-specific transit preferences
+    switch (userPersona) {
+      case "RUSHER":
+        if (transfer_count === 1) {
+          transitBonus += 0.05; // +5% bonus for direct transit
+        } else if (transfer_count > 1) {
+          transitBonus -= transfer_count * 0.03; // Penalty for multiple transfers
+        }
+        transitBonus -= (baseETA / 60) * 0.01; // Bonus for faster routes
+        riskFactors.push("🏃 Rusher prefers express routes with minimal transfers");
+        break;
+        
+      case "SAFE_PLANNER":
+        transitBonus += 0.08; // Base +8% for transit reliability
+        if (transitOptions.crowd_stability && transitOptions.crowd_stability > 0.75) {
+          transitBonus -= 0.08; // Penalize crowded transit
+          riskFactors.push("😟 Safe planner avoids crowded transit during peak");
+        } else {
+          riskFactors.push("✅ Transit uncrowded - favorable for safe planner");
+        }
+        break;
+        
+      case "COMFORT_SEEKER":
+        if (transitOptions.crowd_stability && transitOptions.crowd_stability < 0.5) {
+          transitBonus += 0.10; // Big bonus for uncrowded transit
+          riskFactors.push("😊 Comfort seeker enjoys spacious, uncrowded metro");
+        } else if (transitOptions.crowd_stability && transitOptions.crowd_stability > 0.8) {
+          transitBonus -= 0.12; // Heavy penalty for crowded transit
+          riskFactors.push("😞 Comfort seeker dislikes crowded transit");
+        }
+        transitBonus -= transfer_count * 0.04; // Slight penalty for transfers
+        break;
+        
+      case "EXPLORER":
+        transitBonus += 0.12; // Base +12% for transit exploration
+        if (transfer_count > 0) {
+          transitBonus += transfer_count * 0.02; // Small bonus per transfer (enjoy variety)
+        }
+        riskFactors.push("🚀 Explorer enjoys diverse transit routes");
+        break;
+    }
+    
+    riskFactors.push(`🚇 Transit route with ${transfer_count + 1} leg(s)`);
+  }
+
+  personaBonus += transitBonus;
   
   // 7. Calculate final RCI
   let finalRCI = originalRCI - failurePenalty - timeWindowPenalty - osintPenalty + personaBonus;
@@ -336,4 +409,166 @@ export function compareRoutesForReliability(
   }
   
   return `Routes have marginal reliability difference. Choose based on personal preference.`;
+}
+
+/**
+ * NEW: Persona-based route scoring (NON-DESTRUCTIVE)
+ * Applies persona preferences on top of RCI without modifying RCI calculation
+ */
+
+// Minimum acceptable RCI for RUSHER persona
+const MIN_ACCEPTABLE_RCI = 0.50;
+
+// Scoring weights for different factors
+const TIME_WEIGHT = 0.008; // Weight per minute of travel time
+const CROWD_WEIGHT = 0.15; // Weight for crowd penalty
+
+export interface RouteWithPersonaScore {
+  route: any;
+  persona_score: number;
+  persona_explanation: string;
+}
+
+/**
+ * Apply persona-based scoring to a route
+ * @param route Route object with rci, duration, crowd_stability, etc.
+ * @param persona User's commute persona (defaults to SAFE_PLANNER)
+ * @returns Persona-adjusted score (higher is better)
+ */
+export function applyPersonaWeight(
+  route: {
+    rci: number;
+    duration?: number; // seconds or minutes
+    total_travel_time?: number; // for multi-modal routes
+    transfer_count?: number; // for multi-modal routes
+    mode_type?: "SINGLE" | "MULTI";
+    components?: {
+      crowd_stability?: number;
+      transfer_success?: number;
+    };
+  },
+  persona: CommutePersona = "SAFE_PLANNER"
+): { score: number; explanation: string } {
+  const baseScore = route.rci;
+  
+  // Handle both duration formats (seconds or minutes from API)
+  const durationMinutes = route.total_travel_time || (route.duration ? route.duration / 60 : 0);
+  const travelTimeMinutes = durationMinutes > 500 ? durationMinutes / 60 : durationMinutes; // If > 500, assume seconds
+  
+  const crowdScore = route.components?.crowd_stability || 0.75; // Default if missing
+  const transferScore = route.components?.transfer_success || 0.85;
+  
+  // Multi-modal specific: transfer count penalty
+  const transferCount = route.transfer_count || 0;
+  const isMultiModal = route.mode_type === "MULTI" || transferCount > 0;
+  
+  let score = baseScore;
+  let explanation = "";
+
+  switch (persona) {
+    case "RUSHER":
+      // Prioritize speed, but only if RCI is acceptable
+      // Multi-modal routes with transfers may be slower, apply caution
+      if (baseScore < MIN_ACCEPTABLE_RCI) {
+        score = baseScore * 0.5; // Heavy penalty for low RCI
+        explanation = `⚡ Rusher mode: Route rejected due to low reliability (${(baseScore * 100).toFixed(0)}% < ${(MIN_ACCEPTABLE_RCI * 100).toFixed(0)}%)`;
+      } else {
+        // Reward faster routes, slight penalty for transfers
+        const speedBonus = Math.max(0, (60 - travelTimeMinutes) * TIME_WEIGHT);
+        const transferPenalty = isMultiModal ? transferCount * 0.02 : 0; // -2% per transfer for rushers
+        score = baseScore + speedBonus - transferPenalty;
+        const modeInfo = isMultiModal ? ` (${transferCount} transfer${transferCount !== 1 ? 's' : ''})` : '';
+        explanation = `⚡ Rusher mode: Fastest route with acceptable confidence (${(baseScore * 100).toFixed(0)}% RCI, ${travelTimeMinutes.toFixed(0)} min)${modeInfo}`;
+      }
+      break;
+
+    case "SAFE_PLANNER":
+      // Pure RCI priority, but penalize multiple transfers
+      // Safe planners avoid complex routes
+      const safeTransferPenalty = isMultiModal ? transferCount * 0.08 : 0; // -8% per transfer for safe planners
+      score = baseScore - safeTransferPenalty;
+      const safeTransferInfo = isMultiModal ? ` (${transferCount} transfer${transferCount !== 1 ? 's' : ''})` : '';
+      explanation = `🛡️ Safe Planner: Highest reliability route (${(baseScore * 100).toFixed(0)}% RCI)${safeTransferInfo}`;
+      break;
+
+    case "COMFORT_SEEKER":
+      // Penalize crowded routes, transfers, and complexity
+      const crowdPenalty = (1 - crowdScore) * CROWD_WEIGHT;
+      const comfortTransferPenalty = (1 - transferScore) * 0.10 + (isMultiModal ? transferCount * 0.05 : 0);
+      score = baseScore - crowdPenalty - comfortTransferPenalty;
+      const comfortInfo = isMultiModal ? ` (${transferCount} transfer${transferCount !== 1 ? 's' : ''})` : '';
+      explanation = `🛋️ Comfort Seeker: Less crowded route (${(crowdScore * 100).toFixed(0)}% comfort, ${(transferScore * 100).toFixed(0)}% smooth transfers)${comfortInfo}`;
+      break;
+
+    case "EXPLORER":
+      // Balanced scoring across all factors
+      // Explorers are open to multi-modal routes for variety
+      const normalizedTime = Math.max(0, Math.min(1, 1 - (travelTimeMinutes / 120))); // Normalize to 2 hours max
+      const explorerTransferBonus = isMultiModal ? transferCount * 0.01 : 0; // +1% per transfer for explorers (variety bonus)
+      const balancedScore = 
+        0.4 * baseScore +
+        0.3 * normalizedTime +
+        0.3 * crowdScore +
+        explorerTransferBonus;
+      score = balancedScore;
+      const explorerInfo = isMultiModal ? ` (${transferCount} transfer${transferCount !== 1 ? 's' : ''})` : '';
+      explanation = `🧭 Explorer: Balanced route (${(baseScore * 100).toFixed(0)}% RCI, ${travelTimeMinutes.toFixed(0)} min, ${(crowdScore * 100).toFixed(0)}% comfort)${explorerInfo}`;
+      break;
+
+    default:
+      // Fallback to SAFE_PLANNER
+      const fallbackTransferPenalty = isMultiModal ? transferCount * 0.08 : 0;
+      score = baseScore - fallbackTransferPenalty;
+      explanation = `🛡️ Safe Planner (default): Highest reliability route (${(baseScore * 100).toFixed(0)}% RCI)`;
+  }
+
+  return { score, explanation };
+}
+
+/**
+ * Rank routes based on persona preferences
+ * @param routes Array of routes with RCI data
+ * @param persona User's commute persona
+ * @returns Routes sorted by persona preference (best first)
+ */
+export function rankRoutesByPersona(
+  routes: any[],
+  persona: CommutePersona = "SAFE_PLANNER"
+): RouteWithPersonaScore[] {
+  if (!routes || routes.length === 0) {
+    return [];
+  }
+
+  // Apply persona scoring to each route
+  const scoredRoutes = routes.map((route) => {
+    const { score, explanation } = applyPersonaWeight(route, persona);
+    return {
+      route,
+      persona_score: score,
+      persona_explanation: explanation,
+    };
+  });
+
+  // Sort by persona score (highest first)
+  scoredRoutes.sort((a, b) => b.persona_score - a.persona_score);
+
+  return scoredRoutes;
+}
+
+/**
+ * Get persona description for UI
+ */
+export function getPersonaDescription(persona: CommutePersona): string {
+  switch (persona) {
+    case "RUSHER":
+      return "Prioritizes fastest routes with acceptable reliability";
+    case "SAFE_PLANNER":
+      return "Prioritizes highest reliability, avoids failure hotspots";
+    case "COMFORT_SEEKER":
+      return "Prioritizes comfort, avoids crowds and transfers";
+    case "EXPLORER":
+      return "Balanced approach across speed, reliability, and comfort";
+    default:
+      return "Safe Planner (default)";
+  }
 }
