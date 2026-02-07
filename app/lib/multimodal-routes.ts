@@ -11,6 +11,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { RouteLeg, MultiModalRoute, TransportMode } from "./types";
 import { calculateEnhancedRCI, type CommutePersona } from "./enhanced-rci";
+import { MUMBAI_STATIONS } from "./traffic-intelligence";
 
 interface TransitHub {
   name: string;
@@ -28,6 +29,83 @@ const TRANSIT_HUBS: TransitHub[] = [
   { name: "Newark Airport", lat: 40.6895, lng: -74.1745, type: "AIRPORT" },
   { name: "Port Authority", lat: 40.7562, lng: -73.9897, type: "BUS_STATION" },
 ];
+
+const MUMBAI_ANDHERI_CST_THRESHOLD_KM = 3;
+
+function isWithinDistance(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number,
+  thresholdKm: number
+): boolean {
+  return distanceKm(lat1, lng1, lat2, lng2) <= thresholdKm;
+}
+
+function matchesAndheriToCST(startLat: number, startLng: number, endLat: number, endLng: number): boolean {
+  const startIsAndheri = isWithinDistance(
+    startLat,
+    startLng,
+    MUMBAI_STATIONS.ANDHERI.lat,
+    MUMBAI_STATIONS.ANDHERI.lng,
+    MUMBAI_ANDHERI_CST_THRESHOLD_KM
+  );
+  const endIsCST = isWithinDistance(
+    endLat,
+    endLng,
+    MUMBAI_STATIONS.CST.lat,
+    MUMBAI_STATIONS.CST.lng,
+    MUMBAI_ANDHERI_CST_THRESHOLD_KM
+  );
+  return startIsAndheri && endIsCST;
+}
+
+function buildAndheriToCSTMultiModalLegs(): RouteLeg[] {
+  return [
+    {
+      leg_id: uuidv4(),
+      mode: "CAR",
+      start_lat: MUMBAI_STATIONS.ANDHERI.lat,
+      start_lng: MUMBAI_STATIONS.ANDHERI.lng,
+      end_lat: MUMBAI_STATIONS.BANDRA.lat,
+      end_lng: MUMBAI_STATIONS.BANDRA.lng,
+      travel_time_minutes: 16,
+      wait_time_minutes: 0,
+      crowd_score: 0.12,
+      distance_km: 7.2,
+      geometry: "",
+      transfer_time_minutes: 5,
+    },
+    {
+      leg_id: uuidv4(),
+      mode: "TRAIN",
+      start_lat: MUMBAI_STATIONS.BANDRA.lat,
+      start_lng: MUMBAI_STATIONS.BANDRA.lng,
+      end_lat: MUMBAI_STATIONS.DADAR.lat,
+      end_lng: MUMBAI_STATIONS.DADAR.lng,
+      travel_time_minutes: 25,
+      wait_time_minutes: 7,
+      crowd_score: 0.65,
+      distance_km: 5.8,
+      geometry: "",
+      transfer_time_minutes: 4,
+    },
+    {
+      leg_id: uuidv4(),
+      mode: "TRAIN",
+      start_lat: MUMBAI_STATIONS.DADAR.lat,
+      start_lng: MUMBAI_STATIONS.DADAR.lng,
+      end_lat: MUMBAI_STATIONS.CST.lat,
+      end_lng: MUMBAI_STATIONS.CST.lng,
+      travel_time_minutes: 15,
+      wait_time_minutes: 4,
+      crowd_score: 0.62,
+      distance_km: 6.1,
+      geometry: "",
+      transfer_time_minutes: 0,
+    },
+  ];
+}
 
 // Find nearest transit hub
 function findNearestHub(lat: number, lng: number, type?: string): TransitHub | null {
@@ -173,6 +251,25 @@ export async function generateMultiModalRoutes(
   const multiModalRoutes: MultiModalRoute[] = [];
 
   try {
+    if (matchesAndheriToCST(startLat, startLng, endLat, endLng)) {
+      const fixedLegs = buildAndheriToCSTMultiModalLegs();
+      multiModalRoutes.push(
+        createMultiModalRoute(
+          "Car + Train (Andheri → Bandra → Dadar → CST)",
+          fixedLegs,
+          startLat,
+          startLng,
+          endLat,
+          endLng,
+          currentTime,
+          persona,
+          osintZones,
+          enhancedRCICompute
+        )
+      );
+      return multiModalRoutes;
+    }
+
     // Strategy 1: Car + Train
     // Start → Nearest Train Station (car) → Destination Hub (train) → End (walk)
     const trainStation = findNearestHub(startLat, startLng, "TRAIN_STATION");

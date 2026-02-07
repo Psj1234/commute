@@ -4,6 +4,7 @@ import { useEffect, useState, Suspense } from "react";
 import Link from "next/link";
 import { ArrowLeft, AlertCircle, TrendingUp } from "lucide-react";
 import { getOrCreateUserId } from "@/app/lib/user-utils";
+import { MUMBAI_STATIONS } from "@/app/lib/traffic-intelligence";
 
 // NEW: Import multi-modal routing
 import { getMultiModalRoutes, MultiModalRoute, TravelMode } from "@/app/lib/multi-modal-routes";
@@ -89,6 +90,24 @@ export default function Dashboard() {
   const [selectedPersona, setSelectedPersona] = useState<"RUSHER" | "SAFE_PLANNER" | "COMFORT_SEEKER" | "EXPLORER">("SAFE_PLANNER");
   const [personaExplanation, setPersonaExplanation] = useState<string>("");
 
+  const stationLookup = Object.values(MUMBAI_STATIONS);
+
+  const formatCoord = (value: number) => value.toFixed(4);
+
+  const getStationNameFromCoords = (lat: number, lng: number): string | null => {
+    const match = stationLookup.find(
+      (station) => Math.abs(station.lat - lat) <= 0.005 && Math.abs(station.lng - lng) <= 0.005
+    );
+    return match ? match.name : null;
+  };
+
+  const formatLegLabel = (leg: any) => {
+    const startName = getStationNameFromCoords(leg.start_lat, leg.start_lng)
+      ?? `${formatCoord(leg.start_lat)}, ${formatCoord(leg.start_lng)}`;
+    const endName = getStationNameFromCoords(leg.end_lat, leg.end_lng)
+      ?? `${formatCoord(leg.end_lat)}, ${formatCoord(leg.end_lng)}`;
+    return `${startName} → ${endName}`;
+  };
 
   useEffect(() => {
     const id = getOrCreateUserId();
@@ -645,171 +664,241 @@ export default function Dashboard() {
                             setNavigationSteps(route.steps || []);
                             setSelectedMultiModalRoute(null); // NEW: Clear multi-modal selection
                           }}
-                          className={`p-4 rounded-lg border-2 cursor-pointer transition-all ${
+                          className={`p-5 rounded-xl border-2 cursor-pointer transition-all shadow-sm hover:shadow-md ${
                             selectedRoute?.route_id === route.route_id
-                              ? "border-zinc-900 bg-zinc-50"
-                              : "border-zinc-200 hover:border-zinc-300"
+                              ? "border-zinc-900 bg-zinc-50 shadow-lg"
+                              : "border-zinc-200 hover:border-zinc-400"
                           }`}
                         >
-                          <div className="flex justify-between items-start mb-2">
-                            <div className="flex items-center gap-2">
+                          <div className="flex justify-between items-start mb-3">
+                            <div className="flex items-center gap-2 flex-wrap">
                               {/* NEW: Multi-modal route badge with leg icons */}
                               {route.mode_type === "MULTI" && route.legs && route.legs.length > 0 ? (
-                                <div className="flex items-center gap-1">
+                                <div className="flex items-center gap-1 bg-gradient-to-r from-indigo-100 to-blue-100 px-2 py-1 rounded-lg">
                                   {route.legs.map((leg: any, idx: number) => (
-                                    <span key={`${route.route_id}-leg-${idx}`}>
-                                      {leg.mode === "CAR" ? "🚗" :
-                                       leg.mode === "TRAIN" ? "🚆" :
-                                       leg.mode === "FLIGHT" ? "✈️" :
-                                       leg.mode === "WALK" ? "🚶" : "?"}
-                                      {idx < route.legs.length - 1 && <span className="text-xs text-gray-400">→</span>}
+                                    <span key={`${route.route_id}-leg-${idx}`} className="flex items-center">
+                                      <span className="text-base">
+                                        {leg.mode === "CAR" ? "🚗" :
+                                         leg.mode === "TRAIN" ? "🚆" :
+                                         leg.mode === "FLIGHT" ? "✈️" :
+                                         leg.mode === "WALK" ? "🚶" : "?"}
+                                      </span>
+                                      {idx < route.legs.length - 1 && <span className="text-xs text-indigo-400 mx-0.5">+</span>}
                                     </span>
                                   ))}
                                 </div>
                               ) : (
-                                <span className="text-lg">🚗</span>
+                                <span className="text-xl">🚗</span>
                               )}
-                              <h3 className="font-semibold text-zinc-900 text-sm">{route.name || "Route"}</h3>
+                              <h3 className="font-bold text-zinc-900 text-base">{route.name || "Route"}</h3>
                               {/* NEW: Route mode label for multi-modal */}
                               {route.mode_type === "MULTI" && (
-                                <span className="text-xs bg-indigo-100 text-indigo-800 px-2 py-1 rounded font-medium">
+                                <span className="text-xs bg-indigo-600 text-white px-2.5 py-1 rounded-full font-semibold">
                                   {route.legs?.map((l: any) => l.mode).join(" + ") || "Multi-Modal"}
                                 </span>
                               )}
                               {route.is_maps_preferred && (
-                                <span className="text-xs bg-blue-600 text-white px-2 py-1 rounded">Maps Preferred</span>
+                                <span className="text-xs bg-blue-600 text-white px-2.5 py-1 rounded-full font-semibold">Maps Preferred</span>
                               )}
                               {isBestRCI && (
-                                <span className="text-xs bg-green-600 text-white px-2 py-1 rounded">Most Reliable</span>
+                                <span className="text-xs bg-green-600 text-white px-2.5 py-1 rounded-full font-semibold">Most Reliable</span>
                               )}
                             </div>
                             {selectedRoute?.route_id === route.route_id && (
-                              <span className="text-xs bg-zinc-900 text-white px-2 py-1 rounded">
+                              <span className="text-xs bg-zinc-900 text-white px-3 py-1.5 rounded-full font-semibold">
                                 Selected
                               </span>
                             )}
                           </div>
-                          <div className="space-y-1 text-xs text-zinc-600">
-                            <div className="flex justify-between">
-                              <span>Distance:</span>
-                              <span className="font-medium">{route.distance || route.total_distance_km} km</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span>ETA:</span>
-                              <span className="font-medium">{route.base_eta || route.total_travel_time || Math.round((route.duration || 0) / 60)} min</span>
+                          <div className="space-y-2">
+                            {/* Main Route Info */}
+                            <div className="grid grid-cols-2 gap-3 text-sm">
+                              <div className="space-y-1">
+                                <div className="text-zinc-500 text-xs">Distance</div>
+                                <div className="font-semibold text-zinc-900">{route.distance || route.total_distance_km} km</div>
+                              </div>
+                              <div className="space-y-1">
+                                <div className="text-zinc-500 text-xs">ETA</div>
+                                <div className="font-semibold text-zinc-900">{route.base_eta || route.total_travel_time || Math.round((route.duration || 0) / 60)} min</div>
+                              </div>
                             </div>
                             
                             {/* NEW: Multi-modal route additional info */}
                             {route.mode_type === "MULTI" && (
                               <>
-                                <div className="flex justify-between">
-                                  <span>Transfers:</span>
-                                  <span className="font-medium text-amber-700">{route.transfer_count || (route.legs?.length - 1 || 0)}</span>
+                                {/* Transfers Badge */}
+                                <div className="flex items-center gap-2 p-2 bg-amber-50 border border-amber-200 rounded-lg">
+                                  <span className="text-lg">🔄</span>
+                                  <div className="flex-1">
+                                    <div className="text-xs text-amber-700 font-medium">Transfers</div>
+                                    <div className="text-sm font-bold text-amber-900">{route.transfer_count || (route.legs?.length - 1 || 0)}</div>
+                                  </div>
                                 </div>
+                                
+                                {/* Multimodal Route Breakdown */}
                                 {route.legs && route.legs.length > 0 && (
-                                  <div className="mt-2 pt-1 border-t border-zinc-300">
-                                    <div className="text-xs font-semibold text-zinc-700 mb-1">Legs:</div>
-                                    {route.legs.map((leg: any, idx: number) => (
-                                      <div key={`${route.route_id}-leg-details-${idx}`} className="text-[10px] text-zinc-500 flex justify-between">
-                                        <span>
-                                          {leg.mode === "CAR" ? "🚗" :
-                                           leg.mode === "TRAIN" ? "🚆" :
-                                           leg.mode === "FLIGHT" ? "✈️" :
-                                           leg.mode === "WALK" ? "🚶" : "?"} {leg.mode}
-                                        </span>
-                                        <span>{leg.travel_time_minutes}m{leg.wait_time_minutes > 0 ? ` +${leg.wait_time_minutes}m` : ""}</span>
-                                      </div>
-                                    ))}
+                                  <div className="mt-3 p-3 bg-gradient-to-br from-indigo-50 to-blue-50 border border-indigo-200 rounded-lg">
+                                    <div className="text-sm font-bold text-indigo-900 mb-3 flex items-center gap-2">
+                                      <span>🗺️</span>
+                                      <span>Multimodal Route Details</span>
+                                    </div>
+                                    <div className="space-y-2">
+                                      {route.legs.map((leg: any, idx: number) => (
+                                        <div key={`${route.route_id}-leg-details-${idx}`} className="bg-white p-2.5 rounded-md border border-indigo-100 shadow-sm">
+                                          <div className="flex items-start justify-between gap-2">
+                                            <div className="flex-1">
+                                              <div className="flex items-center gap-2 mb-1">
+                                                <span className="text-lg">
+                                                  {leg.mode === "CAR" ? "🚗" :
+                                                   leg.mode === "TRAIN" ? "🚆" :
+                                                   leg.mode === "FLIGHT" ? "✈️" :
+                                                   leg.mode === "WALK" ? "🚶" : "?"}
+                                                </span>
+                                                <span className="font-semibold text-xs text-zinc-900">
+                                                  {leg.mode === "CAR" ? "Car" : leg.mode === "TRAIN" ? "Train" : leg.mode === "FLIGHT" ? "Flight" : leg.mode === "WALK" ? "Walk" : leg.mode}
+                                                </span>
+                                              </div>
+                                              <div className="text-xs text-zinc-600">
+                                                {formatLegLabel(leg)}
+                                              </div>
+                                            </div>
+                                            <div className="text-right">
+                                              <div className="font-bold text-sm text-indigo-700">{leg.distance_km?.toFixed(1)} km</div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
                                   </div>
                                 )}
                               </>
                             )}
                             
                             {/* NEW: Enhanced RCI Display with Confidence Level */}
-                            <div className="mt-2 p-2 rounded bg-zinc-100 border border-zinc-300">
-                              <div className="flex justify-between items-center mb-1">
-                                <span className="font-semibold text-zinc-800">Reliability Score:</span>
-                                <span className={`font-bold text-lg ${
-                                  route.rci >= 0.75 ? 'text-green-600' : 
-                                  route.rci >= 0.55 ? 'text-yellow-600' : 
-                                  'text-red-600'
-                                }`}>
-                                  {(route.rci * 100).toFixed(0)}%
-                                </span>
-                              </div>
-                              {route.confidence_level && (
-                                <div className="flex justify-between items-center">
-                                  <span className="text-xs">Confidence:</span>
-                                  <span className={`text-xs font-medium px-2 py-0.5 rounded ${
-                                    route.confidence_level === 'HIGH' ? 'bg-green-200 text-green-800' :
-                                    route.confidence_level === 'MEDIUM' ? 'bg-yellow-200 text-yellow-800' :
-                                    'bg-red-200 text-red-800'
+                            <div className={`mt-3 p-3 rounded-lg border-2 ${
+                              route.rci >= 0.75 ? 'bg-green-50 border-green-300' : 
+                              route.rci >= 0.55 ? 'bg-yellow-50 border-yellow-300' : 
+                              'bg-red-50 border-red-300'
+                            }`}>
+                              <div className="flex justify-between items-center">
+                                <div>
+                                  <div className="text-xs font-medium text-zinc-600 mb-0.5">Reliability Score</div>
+                                  <span className={`font-bold text-2xl ${
+                                    route.rci >= 0.75 ? 'text-green-700' : 
+                                    route.rci >= 0.55 ? 'text-yellow-700' : 
+                                    'text-red-700'
                                   }`}>
-                                    {route.confidence_level}
+                                    {(route.rci * 100).toFixed(0)}%
                                   </span>
                                 </div>
-                              )}
+                                {route.confidence_level && (
+                                  <div className="text-right">
+                                    <div className="text-xs text-zinc-600 mb-0.5">Confidence</div>
+                                    <span className={`text-xs font-bold px-3 py-1 rounded-full ${
+                                      route.confidence_level === 'HIGH' ? 'bg-green-200 text-green-900' :
+                                      route.confidence_level === 'MEDIUM' ? 'bg-yellow-200 text-yellow-900' :
+                                      'bg-red-200 text-red-900'
+                                    }`}>
+                                      {route.confidence_level}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                             
                             {/* NEW: Show penalties/bonuses if significant */}
                             {(route.failure_penalty > 0.05 || route.time_window_penalty > 0.05 || 
                               route.osint_penalty > 0.05 || route.persona_bonus > 0.05) && (
-                              <div className="mt-2 space-y-1 text-[10px] text-zinc-500">
-                                {route.failure_penalty > 0.05 && (
-                                  <div className="flex justify-between">
-                                    <span>⚠️ Failure History:</span>
-                                    <span className="text-red-600">-{(route.failure_penalty * 100).toFixed(0)}%</span>
-                                  </div>
-                                )}
-                                {route.time_window_penalty > 0.05 && (
-                                  <div className="flex justify-between">
-                                    <span>⏰ Time Window:</span>
-                                    <span className="text-orange-600">-{(route.time_window_penalty * 100).toFixed(0)}%</span>
-                                  </div>
-                                )}
-                                {route.osint_penalty > 0.05 && (
-                                  <div className="flex justify-between">
-                                    <span>🔴 Advisory Zones:</span>
-                                    <span className="text-red-600">-{(route.osint_penalty * 100).toFixed(0)}%</span>
-                                  </div>
-                                )}
-                                {route.persona_bonus > 0.05 && (
-                                  <div className="flex justify-between">
-                                    <span>👤 Persona Match:</span>
-                                    <span className="text-green-600">+{(route.persona_bonus * 100).toFixed(0)}%</span>
-                                  </div>
-                                )}
+                              <div className="mt-3 p-3 bg-zinc-50 border border-zinc-200 rounded-lg">
+                                <div className="text-xs font-semibold text-zinc-700 mb-2 flex items-center gap-1">
+                                  <span>⚠️</span>
+                                  <span>Score Adjustments</span>
+                                </div>
+                                <div className="space-y-1.5 text-xs">
+                                  {route.failure_penalty > 0.05 && (
+                                    <div className="flex justify-between items-center p-1.5 bg-red-50 rounded">
+                                      <span className="text-zinc-700 flex items-center gap-1">
+                                        <span>⚠️</span>
+                                        <span>Failure History</span>
+                                      </span>
+                                      <span className="font-semibold text-red-700">-{(route.failure_penalty * 100).toFixed(0)}%</span>
+                                    </div>
+                                  )}
+                                  {route.time_window_penalty > 0.05 && (
+                                    <div className="flex justify-between items-center p-1.5 bg-orange-50 rounded">
+                                      <span className="text-zinc-700 flex items-center gap-1">
+                                        <span>⏰</span>
+                                        <span>Time Window</span>
+                                      </span>
+                                      <span className="font-semibold text-orange-700">-{(route.time_window_penalty * 100).toFixed(0)}%</span>
+                                    </div>
+                                  )}
+                                  {route.osint_penalty > 0.05 && (
+                                    <div className="flex justify-between items-center p-1.5 bg-red-50 rounded">
+                                      <span className="text-zinc-700 flex items-center gap-1">
+                                        <span>🔴</span>
+                                        <span>Advisory Zones</span>
+                                      </span>
+                                      <span className="font-semibold text-red-700">-{(route.osint_penalty * 100).toFixed(0)}%</span>
+                                    </div>
+                                  )}
+                                  {route.persona_bonus > 0.05 && (
+                                    <div className="flex justify-between items-center p-1.5 bg-green-50 rounded">
+                                      <span className="text-zinc-700 flex items-center gap-1">
+                                        <span>👤</span>
+                                        <span>Persona Match</span>
+                                      </span>
+                                      <span className="font-semibold text-green-700">+{(route.persona_bonus * 100).toFixed(0)}%</span>
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             )}
                             
                             {/* Explanation */}
                             {route.explanation && (
-                              <div className="text-xs text-blue-700 mt-2 p-2 bg-blue-50 rounded border border-blue-200">
-                                {route.explanation}
+                              <div className="text-xs text-blue-800 mt-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                                <div className="flex items-start gap-2">
+                                  <span className="text-sm">💡</span>
+                                  <span className="leading-relaxed">{route.explanation}</span>
+                                </div>
                               </div>
                             )}
                             
                             {/* NEW: Persona Explanation (if available) */}
                             {route.persona_explanation && (
-                              <div className="text-xs text-purple-700 mt-2 p-2 bg-purple-50 rounded border border-purple-200 flex items-start gap-1">
-                                <span>
-                                  {selectedPersona === "RUSHER" ? "⚡" :
-                                   selectedPersona === "SAFE_PLANNER" ? "🛡️" :
-                                   selectedPersona === "COMFORT_SEEKER" ? "🛋️" : "🧭"}
-                                </span>
-                                <span>{route.persona_explanation}</span>
+                              <div className="text-xs mt-3 p-3 bg-purple-50 rounded-lg border border-purple-200">
+                                <div className="flex items-start gap-2">
+                                  <span className="text-lg">
+                                    {selectedPersona === "RUSHER" ? "⚡" :
+                                     selectedPersona === "SAFE_PLANNER" ? "🛡️" :
+                                     selectedPersona === "COMFORT_SEEKER" ? "🛋️" : "🧭"}
+                                  </span>
+                                  <div className="flex-1">
+                                    <div className="font-semibold text-purple-900 mb-1">
+                                      {selectedPersona === "RUSHER" ? "Rusher" :
+                                       selectedPersona === "SAFE_PLANNER" ? "Safe Planner" :
+                                       selectedPersona === "COMFORT_SEEKER" ? "Comfort Seeker" : "Explorer"} Match
+                                    </div>
+                                    <span className="text-purple-800 leading-relaxed">{route.persona_explanation}</span>
+                                  </div>
+                                </div>
                               </div>
                             )}
                             
                             {/* NEW: Risk Factors */}
                             {route.risk_factors && route.risk_factors.length > 0 && (
-                              <details className="mt-2">
-                                <summary className="text-xs cursor-pointer text-zinc-700 font-medium">
-                                  📋 Risk Factors ({route.risk_factors.length})
+                              <details className="mt-3">
+                                <summary className="text-xs cursor-pointer text-zinc-700 font-semibold p-2 bg-zinc-50 rounded border border-zinc-200 hover:bg-zinc-100 flex items-center gap-2">
+                                  <span>📋</span>
+                                  <span>Risk Factors ({route.risk_factors.length})</span>
                                 </summary>
-                                <div className="mt-1 space-y-1 text-[10px] text-zinc-600 ml-4">
+                                <div className="mt-2 space-y-1 text-xs text-zinc-600 p-2 bg-zinc-50 rounded border border-zinc-200">
                                   {route.risk_factors.map((factor: string, idx: number) => (
-                                    <div key={idx}>• {factor}</div>
+                                    <div key={idx} className="flex items-start gap-2">
+                                      <span className="text-zinc-400">•</span>
+                                      <span>{factor}</span>
+                                    </div>
                                   ))}
                                 </div>
                               </details>

@@ -232,6 +232,33 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Persona-Traffic Integration CTA */}
+        <div className="mt-24 bg-gradient-to-r from-blue-50 to-indigo-50 border border-indigo-200 rounded-xl p-12 space-y-6">
+          <h2 className="text-2xl font-bold text-indigo-900">
+            🧠 Try Persona-Based Traffic-Aware Routing
+          </h2>
+          <p className="text-indigo-800">
+            Demo the next evolution: Routes intelligently re-ranked based on your commute style and live traffic patterns. 
+            Try different personas and watch how the system adapts to your preferences.
+          </p>
+          <div className="flex gap-4 flex-wrap">
+            <Link
+              href="/persona/routes"
+              className="inline-flex items-center gap-2 bg-indigo-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-indigo-700 transition-colors"
+            >
+              Explore Personas <ArrowRight size={18} />
+            </Link>
+            <a
+              href="/api/routes/personalized?persona=RUSHER&time=09:30"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 border border-indigo-600 text-indigo-600 px-6 py-3 rounded-lg font-medium hover:bg-indigo-50 transition-colors"
+            >
+              API Demo
+            </a>
+          </div>
+        </div>
+
         {/* CTA */}
         <div className="mt-24 text-center space-y-6">
           <h2 className="text-3xl font-bold text-zinc-900">
